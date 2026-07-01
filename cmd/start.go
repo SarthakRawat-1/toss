@@ -1,0 +1,213 @@
+package cmd
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"github.com/SarthakRawat-1/Toss/internal"
+	"github.com/SarthakRawat-1/Toss/internal/config"
+	"github.com/SarthakRawat-1/Toss/internal/paths"
+	"github.com/SarthakRawat-1/Toss/internal/services/serverlog"
+	"github.com/spf13/cobra"
+)
+
+var port int         //default :8080
+var debug bool       //default false
+var authEnabled bool // default false
+
+var serveCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the sharing server",
+	Run: func(cmd *cobra.Command, args []string) {
+		portOverride := (*int)(nil)
+		authOverride := (*bool)(nil)
+		if cmd.Flags().Changed("port") {
+			portOverride = &port
+		}
+		if cmd.Flags().Changed("auth") {
+			authOverride = &authEnabled
+		}
+
+		configPort := port
+		configAuth := authEnabled
+		if cfg, err := config.GetConfig(); err == nil {
+			configPort = cfg.App.Port
+			configAuth = cfg.Auth.Enabled
+		}
+
+		effectivePort := configPort
+		effectiveAuth := configAuth
+		if portOverride != nil {
+			effectivePort = *portOverride
+		}
+		if authOverride != nil {
+			effectiveAuth = *authOverride
+		}
+
+		if debug {
+			fmt.Println("Starting server in debug mode (foreground)...")
+			startServer(portOverride, authOverride, effectivePort, effectiveAuth)
+			return
+		}
+		//temp, must be changed!
+		pidFile, err := paths.GetPidFilePath()
+		if err != nil {
+			fmt.Printf("Could not get pid file path: %v\n", err)
+			return
+		}
+
+		if isServerRunning(pidFile) {
+			fmt.Println("Toss server is already running!")
+			fmt.Println("Use 'toss stop' to stop it first")
+			return
+		}
+
+		if isPortInUse(strconv.Itoa(effectivePort)) {
+			fmt.Printf("Port %d is already in use by another application.\n", effectivePort)
+			fmt.Println("Choose a different port with --port flag")
+			return
+		}
+
+		execPath, err := os.Executable()
+		if err != nil {
+			fmt.Println("Failed to locate executable:", err)
+			return
+		}
+
+		args = []string{"start", "--debug"}
+		if portOverride != nil {
+			args = append(args, "--port", strconv.Itoa(*portOverride))
+		}
+		if authOverride != nil {
+			args = append(args, "--auth="+strconv.FormatBool(*authOverride))
+		}
+		bgCmd := exec.Command(execPath, args...)
+
+		setProcAttributes(bgCmd)
+
+		bgCmd.Stdin = nil
+		bgCmd.Stdout = nil
+		bgCmd.Stderr = nil
+
+		err = bgCmd.Start()
+		if err != nil {
+			fmt.Println("Failed to start server in background:", err)
+			return
+		}
+
+		pid := bgCmd.Process.Pid
+
+		pidInfo := fmt.Sprintf("%d:%d", pid, effectivePort)
+		err = os.WriteFile(pidFile, []byte(pidInfo), 0644)
+		if err != nil {
+			fmt.Println("Failed to write PID file:", err)
+			return
+		}
+
+		fmt.Printf("Toss server started in background with PID %d\n", pid)
+		fmt.Printf("Server running on http://localhost:%d\n", effectivePort)
+		fmt.Println("Use 'toss stop' to stop the server")
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(serveCmd)
+	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+	serveCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Run in debug mode (foreground with console output)")
+	serveCmd.Flags().BoolVarP(&authEnabled, "auth", "a", false, "Enable admin authentication")
+}
+
+func isServerRunning(pidFile string) bool {
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(pidData)), ":")
+	if len(parts) == 0 {
+		os.Remove(pidFile)
+		return false
+	}
+
+	pid, err := strconv.Atoi(parts[0])
+	if err != nil {
+		os.Remove(pidFile)
+		return false
+	}
+
+	if !isProcessRunning(pid) {
+		os.Remove(pidFile)
+		return false
+	}
+
+	return true
+}
+
+func isPortInUse(port string) bool {
+	ln, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		return true
+	}
+	ln.Close()
+	return false
+}
+
+func startServer(portOverride *int, authOverride *bool, effectivePort int, effectiveAuth bool) {
+	if err := paths.Initialize(); err != nil {
+		fmt.Println("Failed to initialize storage:", err)
+		return
+	}
+
+	if debug {
+		fmt.Println("Storage initialized successfully")
+		fmt.Printf("Starting server on port %d...\n", effectivePort)
+		if effectiveAuth {
+			fmt.Println("Admin authentication: ENABLED")
+		} else {
+			fmt.Println("Admin authentication: DISABLED")
+		}
+	}
+
+	logEnabled := true
+	logLevel := "info"
+	if cfg, err := config.GetConfig(); err == nil {
+		logEnabled = cfg.Logging.Enabled
+		logLevel = cfg.Logging.Level
+	}
+	if err := serverlog.InitLogToFile(logEnabled, logLevel); err != nil {
+		fmt.Printf("Failed to initialize logging: %v\n", err)
+	}
+	defer serverlog.Close()
+
+	server, err := internal.NewServer(portOverride, authOverride, nil)
+	if err != nil {
+		serverlog.Errorf("failed to initialize server: %v", err)
+		fmt.Printf("Failed to start server : %v\n", err)
+		return
+	}
+	if err := server.Init(); err != nil {
+		serverlog.Errorf("failed to setup up server: %v", err)
+		fmt.Printf("Failed to start server: %v\n", err)
+		return
+	}
+
+	//router, mdnsServer := internal.NewServer(authEnabled)
+	//mdnsServer.Shutdown()
+
+	if debug {
+		fmt.Printf("Server ready at http://localhost:%d\n", effectivePort)
+		fmt.Println("Press Ctrl+C to stop")
+	}
+
+	if err := server.Start(); err != nil {
+		fmt.Printf("Server failed to start: %v\n", err)
+	}
+	//err := server.router.Run(":" + port)
+	//if err != nil {
+	//fmt.Printf("Server failed to start: %v\n", err)
+	//}
+}

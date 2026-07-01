@@ -1,0 +1,38 @@
+# Binaries
+*.exe
+localdrop
+localdrop.exe
+
+# Runtime files 
+*.pid
+*.log
+files/
+adminList.json
+listOfFiles.json
+localdrop.db
+
+# Node.js
+node_modules/
+
+# Testing
+internal/services/testing/
+
+# IDE
+.vscode/
+.VSCodeCounter/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+scripts/
+.hintrc
+.env
+__old_static/
+
+# Added by goreleaser init:
+dist/
+
