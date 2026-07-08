@@ -5,7 +5,7 @@ Fast local network file sharing. No internet, no cloud, no setup beyond running 
 ![Files page](screenshots/files.png)
 ![Dashboard](screenshots/dashboard.png)
 
-[![Demo](https://img.shields.io/badge/Watch%20Demo-YouTube-red)](https://youtu.be/PLACEHOLDER)
+[![Demo](https://img.shields.io/badge/Watch%20Demo-YouTube-red)](https://youtu.be/3L9tLza_I2k)
 
 ## How it works
 
